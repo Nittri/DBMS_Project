@@ -21,10 +21,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const connection = await getPool().getConnection();
+  let connection: Awaited<ReturnType<ReturnType<typeof getPool>["getConnection"]>> | undefined;
+  let transactionStarted = false;
   try {
+    connection = await getPool().getConnection();
     const passwordHash = await hashPassword(password);
     await connection.beginTransaction();
+    transactionStarted = true;
     const [customerResult] = await connection.execute(
       "INSERT INTO Customer (Name, Email, Phone) VALUES (?, ?, ?)",
       [name, email, phone],
@@ -45,16 +48,17 @@ export async function POST(request: Request) {
       [accountId],
     );
     await connection.commit();
+    transactionStarted = false;
     await createSession({ userId, customerId, email, role: "CUSTOMER" });
     return NextResponse.json({ user: { userId, customerId, email, role: "CUSTOMER" } }, { status: 201 });
   } catch (error) {
-    await connection.rollback();
+    if (connection && transactionStarted) await connection.rollback();
     if (typeof error === "object" && error !== null && "code" in error &&
         (error.code === "ER_DUP_ENTRY")) {
       return NextResponse.json({ error: "An account with that email already exists." }, { status: 409 });
     }
     return errorResponse(error);
   } finally {
-    connection.release();
+    connection?.release();
   }
 }

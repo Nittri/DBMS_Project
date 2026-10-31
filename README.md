@@ -7,8 +7,8 @@ A learning project built around the provided forex SQL: a Next.js web app, a MyS
 ## Requirements coverage
 
 - Relational data: Customer, Broker, Currency, Exchange Rate, Forex Trade, Margin Account, Margin Transaction, Payment, Trading Account, and User Account.
-- SQL concepts: DDL with keys/checks/enums, transactional stored procedures, indexed joins and aggregation, a summary view, and normalized currency references.
-- NoSQL: MongoDB `market_insights` stores flexible sample insight documents, returned through an authenticated API.
+- SQL concepts: DDL with keys/checks/enums, transactional stored procedures and triggers, P/L function, indexed joins and aggregation, a summary view, and normalized currency references.
+- NoSQL: MongoDB `market_insights` stores flexible sample notes; `exchange_rate_history` stores immutable admin rate changes and powers a MongoDB daily aggregation by pair.
 - Next.js App Router UI and API routes use parameterized SQL statements and environment-sourced credentials.
 - Authentication uses scrypt password hashes and signed, HTTP-only session cookies. Registration is `CUSTOMER`; `ADMIN` accounts are created only by the local bootstrap CLI. Admin reporting is role-protected.
 - Setup and schema are documented here; the ER model is listed below.
@@ -23,11 +23,13 @@ Prerequisites: Node.js 20+, npm, and Docker Compose.
 4. Visit `http://localhost:3000` and register a customer account. It is created with a zero-balance trading and margin account.
 5. To create an admin, run `node --env-file=.env.local scripts/create-admin.mjs`. It prompts for the administrator details and password; it does not accept a role through public registration.
 
-The Compose setup maps MySQL to port `3308` and MongoDB to `27018` to avoid the common local MySQL port. The SQL file intentionally drops/recreates its objects and seed data; use only with a disposable development database. Compose initialization SQL runs only when the MySQL data volume is empty. To reinitialize that volume, use `docker compose down -v` only when you are certain its data can be deleted.
+The Compose setup maps MySQL to port `3308` and MongoDB to `27018` to avoid the common local MySQL port. The SQL schema file intentionally drops/recreates its objects and seed data; use it only with a disposable development database. Compose initialization SQL runs only when the MySQL data volume is empty. To reinitialize that volume, use `docker compose down -v` only when you are certain its data can be deleted.
+
+If you already initialized the earlier version of this project, keep your data and run `npm run db:migrate` after setting `.env.local`. The migration adds missing payment review fields, refreshes the account summary view, and replaces the procedures/function/triggers without dropping data or tables. It is safe to rerun. It uses `MYSQL_ROOT_PASSWORD` for DDL privileges when available; for managed databases, set `DB_MIGRATION_USER` and `DB_MIGRATION_PASSWORD` to a suitably privileged migration account. Restart the Next.js server after applying the migration.
 
 If sign-in reports that it cannot reach the API, confirm `npm run dev` is still running and open the same local URL printed by Next.js. If the API responds but reports an internal error, confirm Compose shows both databases healthy and that `.env.local` contains the matching database credentials and session secret. After changing environment values, restart the Next.js server.
 
-For manual configuration, copy `.env.example` to `.env.local`, configure a MySQL 8 database and MongoDB 7 database, then execute `database/forex_trading_system.sql` against a fresh database. In PowerShell, import the schema with `Get-Content -Raw database\forex_trading_system.sql | mysql --host=127.0.0.1 --port=3308 --user=forex_app --password --default-character-set=utf8mb4`. Seed MongoDB sample documents with `npm run db:seed-insights`.
+For manual configuration, copy `.env.example` to `.env.local`, configure a MySQL 8 database and MongoDB 7 database, then execute `database/forex_trading_system.sql` against a fresh database. In PowerShell, import the schema with `Get-Content -Raw database\forex_trading_system.sql | mysql --host=127.0.0.1 --port=3308 --user=root --password --default-character-set=utf8mb4` and enter the MySQL root password when prompted. To upgrade an existing project database without deleting its data, run `npm run db:migrate`. Seed MongoDB sample documents with `npm run db:seed-insights`.
 
 ## ER model
 
@@ -50,8 +52,12 @@ erDiagram
 ## API surface
 
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/session`
-- `GET /api/accounts`, `GET|POST /api/trades`, `POST /api/payments/deposit`
+- `GET /api/accounts`, `GET|POST /api/trades`, `POST /api/trades/:tradeId/close`
+- `GET|POST /api/payments` (customer history and withdrawal request), `POST /api/payments/deposit`
+- `GET /api/margin` and `GET /api/exchange-rates` (authenticated)
+- `PUT /api/exchange-rates`, `GET /api/admin/payments`, `POST /api/admin/payments/:paymentId`, and `GET /api/admin/summary` (ADMIN only)
 - `GET /api/insights` (authenticated, MongoDB-backed)
-- `GET /api/admin/summary` (ADMIN only)
 
-Trade and deposit changes run in MySQL stored procedures with validation, account locking, and transaction rollback. Public registration cannot create administrators. For production, add CSRF defenses, rate limiting, secure secret management, observability, a real payment integration, reviewed live market data, and migration tooling before deployment.
+Trade execution reserves leveraged margin in a trigger; closing a trade releases margin and applies the educational P/L formula `amount × (close rate − open rate) / open rate` (reversed for SELL). This is a simplified demo calculation, not a fully currency-denominated brokerage ledger. Deposits are simulated. Withdrawal requests remain pending until an administrator approves or rejects them; approvals re-check available balance and update the account and payment atomically. Rate changes update MySQL and are also recorded in MongoDB for a daily-by-pair aggregation; current rates remain manually maintained demo rates, not a live feed. Example portfolio, open-position, withdrawal-queue, and broker-metric queries are in `database/key_queries.sql`.
+
+Public registration cannot create administrators. Broker operations are exposed to the protected ADMIN dashboard; broker identities remain relational records used for trade/payment assignment, not separate login roles. For production, add CSRF defenses, rate limiting, secure secret management, observability, a real payment integration, reviewed live market data, and a production migration/versioning strategy before deployment.
