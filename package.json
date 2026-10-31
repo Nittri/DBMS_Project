@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "db:seed-insights": "node --env-file=.env.local scripts/seed-insights.mjs"
+    "db:seed-insights": "node --env-file=.env.local scripts/seed-insights.mjs",
+    "db:migrate": "node --env-file=.env.local scripts/migrate-db.mjs"
   },
   "dependencies": {
     "jose": "^5.9.6",
