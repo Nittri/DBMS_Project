@@ -36,8 +36,25 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   } catch {
     throw new Error("Can't reach the app API. Start the server with `npm run dev` and open its local URL.");
   }
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error ?? "Request failed.");
+  const responseText = await response.text();
+  let body: Record<string, unknown> | null = null;
+  if (responseText) {
+    try {
+      const parsed: unknown = JSON.parse(responseText);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as Record<string, unknown>;
+      }
+    } catch {
+      body = null;
+    }
+  }
+  if (!response.ok) {
+    const message = typeof body?.error === "string"
+      ? body.error
+      : `The server returned an unreadable error (HTTP ${response.status}). Check the terminal running npm run dev.`;
+    throw new Error(message);
+  }
+  if (!body) throw new Error("The server returned an empty response. Check the terminal running npm run dev.");
   return body as T;
 }
 
