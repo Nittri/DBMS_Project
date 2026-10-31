@@ -23,11 +23,11 @@ Prerequisites: Node.js 20+, npm, and Docker Compose.
 4. Visit `http://localhost:3000` and register a customer account. It is created with a zero-balance trading and margin account.
 5. To create an admin, run `node --env-file=.env.local scripts/create-admin.mjs`. It prompts for the administrator details and password; it does not accept a role through public registration.
 
-The Compose setup maps MySQL to port `3307` and MongoDB to `27018`. The SQL file intentionally drops/recreates its objects and seed data; use only with a disposable development database. Compose initialization SQL runs only when the MySQL data volume is empty. To reinitialize that volume, use `docker compose down -v` only when you are certain its data can be deleted.
+The Compose setup maps MySQL to port `3308` and MongoDB to `27018` to avoid the common local MySQL port. The SQL file intentionally drops/recreates its objects and seed data; use only with a disposable development database. Compose initialization SQL runs only when the MySQL data volume is empty. To reinitialize that volume, use `docker compose down -v` only when you are certain its data can be deleted.
 
 If sign-in reports that it cannot reach the API, confirm `npm run dev` is still running and open the same local URL printed by Next.js. If the API responds but reports an internal error, confirm Compose shows both databases healthy and that `.env.local` contains the matching database credentials and session secret. After changing environment values, restart the Next.js server.
 
-For manual configuration, copy `.env.example` to `.env.local`, configure a MySQL 8 database and MongoDB 7 database, then execute `database/forex_trading_system.sql` against a fresh database. To load the sample MongoDB documents manually, run `mongosh < database/mongo-init.js`.
+For manual configuration, copy `.env.example` to `.env.local`, configure a MySQL 8 database and MongoDB 7 database, then execute `database/forex_trading_system.sql` against a fresh database. In PowerShell, import the schema with `Get-Content -Raw database\forex_trading_system.sql | mysql --host=127.0.0.1 --port=3308 --user=forex_app --password --default-character-set=utf8mb4`. Seed MongoDB sample documents with `npm run db:seed-insights`.
 
 ## ER model
 

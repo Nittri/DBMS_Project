@@ -7,7 +7,7 @@ services:
       MYSQL_USER: forex_app
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
     ports:
-      - "3307:3306"
+      - "3308:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./database/forex_trading_system.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
