@@ -2,7 +2,10 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
-type User = { userId: number; customerId: number; email: string; role: "CUSTOMER" | "ADMIN" };
+type User = {
+  userId: number; customerId: number | null; brokerId: number | null;
+  email: string; role: "CUSTOMER" | "ADMIN" | "BROKER";
+};
 type Account = {
   Account_ID: number;
   Account_Type: string;
@@ -14,6 +17,8 @@ type Account = {
   Leverage: number;
   Total_Trades: number;
   Total_PnL: number;
+  Active_Trades: number;
+  Current_Portfolio_Value: number;
 };
 type Trade = {
   Trade_ID: number;
@@ -33,9 +38,24 @@ type Payment = {
   Payment_Date: string; Reviewed_At: string | null; Review_Note: string | null;
 };
 type PendingPayment = Payment & { Customer_Name: string };
-type Rate = { From_Currency: string; To_Currency: string; Rate: number; Updated_At: string; Trade_Count: number };
-type RatePoint = { pair: string; rate: number; recordedAt: string };
+type Rate = {
+  From_Currency: string; To_Currency: string; Rate: number; Rate_Source: string;
+  Updated_At: string; Trade_Count: number;
+};
+type RatePoint = {
+  pair: string; day: string; rate: number; minRate: number; maxRate: number;
+  providerDate: string | null; recordedAt: string;
+};
+type RateFeed = {
+  provider: string; interval: string; attempted: boolean; providerDate: string | null;
+  lastCheckedAt: string | null; lastSuccessAt: string | null; error: string | null;
+  historyWarning?: string;
+};
 type MarginTransaction = { Transaction_ID: number; Account_ID: number; Amount: number; Type: string; Created_At: string };
+type BrokerSummary = {
+  brokerName: string; trades: number; openTrades: number; payments: number;
+  pendingWithdrawals: number; tradedNotional: number;
+};
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   let response: Response;
@@ -69,6 +89,34 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return body as T;
 }
 
+function RateHistoryChart({ points }: { points: RatePoint[] }) {
+  const grouped = new Map<string, RatePoint[]>();
+  for (const point of points) {
+    const values = grouped.get(point.pair) ?? [];
+    values.push(point);
+    grouped.set(point.pair, values);
+  }
+  if (!grouped.size) return null;
+
+  return <div className="rate-charts">{Array.from(grouped, ([pair, values]) => {
+    const min = Math.min(...values.map((point) => point.minRate));
+    const max = Math.max(...values.map((point) => point.maxRate));
+    const range = max - min || 1;
+    const pointsAttribute = values.map((point, index) => {
+      const x = values.length < 2 ? 140 : (index / (values.length - 1)) * 280;
+      const y = 60 - ((point.rate - min) / range) * 52;
+      return `${x},${y}`;
+    }).join(" ");
+    return <article className="rate-chart" key={pair}>
+      <div className="insight-top"><strong>{pair}</strong><span>{min.toFixed(4)}–{max.toFixed(4)}</span></div>
+      <svg viewBox="0 0 280 68" role="img" aria-label={`${pair} daily reference rate history`}>
+        <polyline points={pointsAttribute} fill="none" stroke="#1c7555" strokeWidth="2" />
+      </svg>
+      <small>{values.length} daily points · last: {values[values.length - 1].rate.toFixed(4)}</small>
+    </article>;
+  })}</div>;
+}
+
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -79,8 +127,10 @@ export default function Home() {
   const [rates, setRates] = useState<Rate[]>([]);
   const [rateHistory, setRateHistory] = useState<RatePoint[]>([]);
   const [historyAvailable, setHistoryAvailable] = useState(true);
+  const [rateFeed, setRateFeed] = useState<RateFeed | null>(null);
   const [marginTransactions, setMarginTransactions] = useState<MarginTransaction[]>([]);
   const [adminSummary, setAdminSummary] = useState<Record<string, number> | null>(null);
+  const [brokerSummary, setBrokerSummary] = useState<BrokerSummary | null>(null);
   const [mode, setMode] = useState<"login" | "register">("login");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,11 +140,31 @@ export default function Home() {
       const current = await request<{ user: User | null }>("/api/session");
       setUser(current.user);
       if (!current.user) return;
+      if (current.user.role === "BROKER") {
+        const [rateResult, summaryResult, queue] = await Promise.all([
+          request<{ rates: Rate[]; history: RatePoint[]; historyAvailable: boolean; feed: RateFeed }>("/api/exchange-rates"),
+          request<{ summary: BrokerSummary }>("/api/broker/summary"),
+          request<{ payments: PendingPayment[] }>("/api/admin/payments"),
+        ]);
+        setAccounts([]);
+        setTrades([]);
+        setPayments([]);
+        setMarginTransactions([]);
+        setInsights([]);
+        setRates(rateResult.rates);
+        setRateHistory(rateResult.history);
+        setHistoryAvailable(rateResult.historyAvailable);
+        setRateFeed(rateResult.feed);
+        setBrokerSummary(summaryResult.summary);
+        setPendingPayments(queue.payments);
+        setAdminSummary(null);
+        return;
+      }
       const [accountResult, tradeResult, paymentResult, rateResult, marginResult] = await Promise.all([
         request<{ accounts: Account[] }>("/api/accounts"),
         request<{ trades: Trade[] }>("/api/trades"),
         request<{ payments: Payment[] }>("/api/payments"),
-        request<{ rates: Rate[]; history: RatePoint[]; historyAvailable: boolean }>("/api/exchange-rates"),
+        request<{ rates: Rate[]; history: RatePoint[]; historyAvailable: boolean; feed: RateFeed }>("/api/exchange-rates"),
         request<{ transactions: MarginTransaction[] }>("/api/margin"),
       ]);
       setAccounts(accountResult.accounts);
@@ -103,6 +173,7 @@ export default function Home() {
       setRates(rateResult.rates);
       setRateHistory(rateResult.history);
       setHistoryAvailable(rateResult.historyAvailable);
+      setRateFeed(rateResult.feed);
       setMarginTransactions(marginResult.transactions);
       try {
         const insightResult = await request<{ insights: Insight[] }>("/api/insights");
@@ -118,9 +189,11 @@ export default function Home() {
         ]);
         setAdminSummary(result.summary);
         setPendingPayments(queue.payments);
+        setBrokerSummary(null);
       } else {
         setAdminSummary(null);
         setPendingPayments([]);
+        setBrokerSummary(null);
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load dashboard.");
@@ -128,6 +201,23 @@ export default function Home() {
   }, []);
 
   useEffect(() => { void loadDashboard(); }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!user || user.role === "BROKER") return;
+    const timer = window.setInterval(() => {
+      void request<{ rates: Rate[]; history: RatePoint[]; historyAvailable: boolean; feed: RateFeed }>("/api/exchange-rates")
+        .then((result) => {
+          setRates(result.rates);
+          setRateHistory(result.history);
+          setHistoryAvailable(result.historyAvailable);
+          setRateFeed(result.feed);
+        })
+        .catch((error: unknown) => {
+          setMessage(error instanceof Error ? error.message : "Could not refresh exchange rates.");
+        });
+    }, 15 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [user]);
 
   async function handleAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -197,6 +287,22 @@ export default function Home() {
     }
   }
 
+  async function refreshRates() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request<{ feed: RateFeed; rates: Rate[] }>("/api/exchange-rates", { method: "POST" });
+      setRates(result.rates);
+      setRateFeed(result.feed);
+      setMessage(result.feed.error ?? result.feed.historyWarning ?? "Public daily reference rates refreshed.");
+      await loadDashboard();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not refresh rates.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function logout() {
     await request("/api/auth/logout", { method: "POST" });
     setUser(null);
@@ -209,6 +315,8 @@ export default function Home() {
     setRateHistory([]);
     setMarginTransactions([]);
     setAdminSummary(null);
+    setBrokerSummary(null);
+    setRateFeed(null);
   }
 
   if (!user) {
@@ -248,6 +356,70 @@ export default function Home() {
     );
   }
 
+  if (user.role === "BROKER") {
+    return (
+      <main className="dashboard">
+        <header className="topbar">
+          <a className="wordmark" href="#"><span className="brand-mark small">FX</span> Forex Desk</a>
+          <div className="user-area"><span className="role-pill">BROKER</span><span>{user.email}</span><button className="button subtle" onClick={logout}>Sign out</button></div>
+        </header>
+        <section className="welcome-row">
+          <div><p className="eyebrow">BROKER WORKSPACE</p><h1>{brokerSummary?.brokerName ?? "Broker desk"}</h1><p className="muted">Manage reference rates and review withdrawals assigned to your brokerage.</p></div>
+          <div className="live-tag"><span /> DAILY REFERENCE DATA</div>
+        </section>
+        {message && <p className="notice dashboard-notice" role="status">{message}</p>}
+        {rateFeed?.error && <p className="notice dashboard-notice" role="status">Rate refresh issue: {rateFeed.error}. Existing stored rates remain available.</p>}
+        <section className="metrics-grid">
+          {[
+            ["EXECUTED TRADES", brokerSummary?.trades ?? 0],
+            ["OPEN POSITIONS", brokerSummary?.openTrades ?? 0],
+            ["PENDING WITHDRAWALS", brokerSummary?.pendingWithdrawals ?? 0],
+            ["TRADED NOTIONAL", `$${Number(brokerSummary?.tradedNotional ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}`],
+          ].map(([label, value]) => <div className="metric-card" key={label}>
+            <span className="metric-label">{label}</span><strong>{value}</strong><small>Broker-assigned activity</small>
+          </div>)}
+        </section>
+        <section className="content-grid lower-grid">
+          <div className="panel table-panel">
+            <div className="section-heading">
+              <div><p className="eyebrow">EXCHANGE RATES</p><h2>Manage currency rates</h2></div>
+              <button className="button secondary" onClick={() => void refreshRates()} disabled={busy}>Refresh daily provider rates</button>
+            </div>
+            <p className="muted">{rateFeed?.provider}: {rateFeed?.interval} This is not an intraday quote feed.</p>
+            <form className="form-stack compact" onSubmit={(event) => handleAction(event, "/api/exchange-rates", "PUT")}>
+              <div className="form-row">
+                <label>From currency<input name="fromCurrency" required pattern="[A-Za-z]{3}" defaultValue="USD" maxLength={3} /></label>
+                <label>To currency<input name="toCurrency" required pattern="[A-Za-z]{3}" defaultValue="INR" maxLength={3} /></label>
+              </div>
+              <label>Manual demo override<input name="rate" type="number" min="0.000001" step="0.000001" required /></label>
+              <button className="button primary" disabled={busy}>Save manual rate</button>
+            </form>
+            <div className="table-scroll panel-spaced"><table><thead><tr><th>Pair</th><th>Rate</th><th>Source</th><th>Trade count</th><th>Updated</th></tr></thead>
+              <tbody>{rates.map((rate) => <tr key={`${rate.From_Currency}/${rate.To_Currency}`}>
+                <td>{rate.From_Currency}/{rate.To_Currency}</td><td>{Number(rate.Rate).toFixed(6)}</td>
+                <td>{rate.Rate_Source}</td><td>{rate.Trade_Count}</td><td>{new Date(rate.Updated_At).toLocaleString()}</td>
+              </tr>)}</tbody></table></div>
+            <div className="panel-spaced"><RateHistoryChart points={rateHistory} /></div>
+            {!historyAvailable && <p className="muted">MongoDB history is unavailable; current rates remain available from MySQL.</p>}
+          </div>
+          <div className="panel table-panel">
+            <div className="section-heading"><div><p className="eyebrow">WITHDRAWAL REVIEW</p><h2>Assigned pending requests</h2></div><span className="subtle-count">{pendingPayments.length} pending</span></div>
+            {pendingPayments.length === 0 ? <p className="empty-state">No withdrawals are assigned to your brokerage.</p> :
+              <div className="table-scroll"><table><thead><tr><th>Customer</th><th>Account</th><th>Amount</th><th>Action</th></tr></thead>
+                <tbody>{pendingPayments.map((payment) => <tr key={payment.Payment_ID}>
+                  <td>{payment.Customer_Name}</td><td>#{payment.Account_ID}</td><td>${Number(payment.Amount).toFixed(2)}</td>
+                  <td><div className="review-actions">
+                    <button className="button secondary" disabled={busy} onClick={() => void reviewPayment(payment.Payment_ID, "APPROVE")}>Approve</button>
+                    <button className="button subtle" disabled={busy} onClick={() => void reviewPayment(payment.Payment_ID, "REJECT")}>Reject</button>
+                  </div></td>
+                </tr>)}</tbody></table></div>}
+          </div>
+        </section>
+        <footer className="footer-note">Reference rates update daily · Demo balances and payments only · Not financial advice</footer>
+      </main>
+    );
+  }
+
   return (
     <main className="dashboard">
       <header className="topbar">
@@ -275,6 +447,34 @@ export default function Home() {
           <strong>{accounts.reduce((sum, account) => sum + Number(account.Total_Trades), 0)}</strong>
           <small>Across your trading accounts</small>
         </div>
+        <div className="metric-card">
+          <span className="metric-label">OPEN POSITIONS</span>
+          <strong>{accounts.reduce((sum, account) => sum + Number(account.Active_Trades), 0)}</strong>
+          <small>Current marked-to-rate portfolio value: ${accounts.reduce((sum, account) => sum + Number(account.Current_Portfolio_Value), 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}</small>
+        </div>
+      </section>
+      <section className="panel table-panel panel-spaced">
+        <div className="section-heading">
+          <div><p className="eyebrow">EXCHANGE RATE BOARD</p><h2>Daily reference rates</h2></div>
+          {user.role === "ADMIN" && <button className="button secondary" onClick={() => void refreshRates()} disabled={busy}>Refresh rates</button>}
+        </div>
+        <p className="muted">{rateFeed?.provider ?? "Public reference feed"} · {rateFeed?.interval ?? "Delayed daily values"}
+          {rateFeed?.providerDate ? ` Published ${rateFeed.providerDate}` : ""}. These are reference rates, not live/intraday quotes.</p>
+        {rateFeed?.error && <p className="notice" role="status">Refresh issue: {rateFeed.error}. Existing rates are shown.</p>}
+        <div className="table-scroll"><table><thead><tr><th>Pair</th><th>Rate</th><th>Source</th><th>Updated</th></tr></thead>
+          <tbody>{rates.map((rate) => <tr key={`${rate.From_Currency}/${rate.To_Currency}`}>
+            <td>{rate.From_Currency}/{rate.To_Currency}</td><td>{Number(rate.Rate).toFixed(6)}</td>
+            <td>{rate.Rate_Source}</td><td>{new Date(rate.Updated_At).toLocaleString()}</td>
+          </tr>)}</tbody></table></div>
+        {!historyAvailable ? <p className="muted panel-spaced">MongoDB history is unavailable; current rates remain available from MySQL.</p> :
+          rateHistory.length > 0 && <div className="panel-spaced">
+            <RateHistoryChart points={rateHistory} />
+            <div className="table-scroll panel-spaced"><table><thead><tr><th>Pair</th><th>Daily close</th><th>Low–high</th><th>Reference date</th></tr></thead>
+              <tbody>{rateHistory.map((point, index) => <tr key={`${point.pair}-${point.day}-${index}`}>
+                <td>{point.pair}</td><td>{Number(point.rate).toFixed(6)}</td>
+                <td>{Number(point.minRate).toFixed(6)}–{Number(point.maxRate).toFixed(6)}</td><td>{point.day}</td>
+              </tr>)}</tbody></table></div>
+          </div>}
       </section>
       {adminSummary && <section className="panel admin-panel">
         <div className="section-heading"><div><p className="eyebrow">ADMINISTRATION</p><h2>Platform summary</h2></div></div>
@@ -338,7 +538,11 @@ export default function Home() {
       </section>
       {user.role === "ADMIN" && <section className="content-grid lower-grid">
         <div className="panel table-panel">
-          <div className="section-heading"><div><p className="eyebrow">BROKER OPERATIONS</p><h2>Manage exchange rates</h2></div></div>
+          <div className="section-heading">
+            <div><p className="eyebrow">ADMINISTRATION</p><h2>Manage exchange rates</h2></div>
+            <button className="button secondary" onClick={() => void refreshRates()} disabled={busy}>Refresh public rates</button>
+          </div>
+          <p className="muted">Public daily reference data is delayed and is not a real-time market feed. You can apply a manual demo override below.</p>
           <form className="form-stack compact" onSubmit={(event) => handleAction(event, "/api/exchange-rates", "PUT")}>
             <div className="form-row">
               <label>From currency<input name="fromCurrency" required pattern="[A-Za-z]{3}" maxLength={3} defaultValue="USD" /></label>
@@ -347,19 +551,16 @@ export default function Home() {
             <label>Demo rate<input name="rate" type="number" min="0.000001" step="0.000001" required /></label>
             <button className="button primary" disabled={busy}>Save rate</button>
           </form>
-          <div className="table-scroll panel-spaced"><table><thead><tr><th>Pair</th><th>Rate</th><th>Trades</th><th>Updated</th></tr></thead>
+          <div className="table-scroll panel-spaced"><table><thead><tr><th>Pair</th><th>Rate</th><th>Source</th><th>Trades</th><th>Updated</th></tr></thead>
             <tbody>{rates.map((rate) => <tr key={`${rate.From_Currency}/${rate.To_Currency}`}>
-              <td>{rate.From_Currency}/{rate.To_Currency}</td><td>{Number(rate.Rate).toFixed(6)}</td>
+              <td>{rate.From_Currency}/{rate.To_Currency}</td><td>{Number(rate.Rate).toFixed(6)}</td><td>{rate.Rate_Source}</td>
               <td>{rate.Trade_Count}</td><td>{new Date(rate.Updated_At).toLocaleString()}</td>
             </tr>)}</tbody></table></div>
           <div className="panel-spaced">
             <div className="section-heading"><div><p className="eyebrow">MONGODB · DAILY AGGREGATION · 30 DAYS</p><h2>Rate history</h2></div></div>
             {!historyAvailable ? <p className="muted">MongoDB history is unavailable; current MySQL rates are still shown.</p> :
-              rateHistory.length === 0 ? <p className="muted">No rate changes recorded yet. Saving a rate creates the first history point.</p> :
-                <div className="table-scroll"><table><thead><tr><th>Pair</th><th>Daily rate</th><th>Date</th></tr></thead>
-                  <tbody>{rateHistory.map((point, index) => <tr key={`${point.pair}-${point.recordedAt}-${index}`}>
-                    <td>{point.pair}</td><td>{Number(point.rate).toFixed(6)}</td><td>{new Date(point.recordedAt).toLocaleDateString()}</td>
-                  </tr>)}</tbody></table></div>}
+              rateHistory.length === 0 ? <p className="muted">No rate changes recorded yet. Refresh or save a rate to create the first history point.</p> :
+                <RateHistoryChart points={rateHistory} />}
           </div>
         </div>
         <div className="panel table-panel">

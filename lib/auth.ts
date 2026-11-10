@@ -7,13 +7,16 @@ const scrypt = promisify(callbackScrypt);
 const cookieName = "forex_session";
 const sessionDurationSeconds = 60 * 60 * 8;
 
-export type Role = "CUSTOMER" | "ADMIN";
+export type Role = "CUSTOMER" | "ADMIN" | "BROKER";
 export type Session = {
   userId: number;
-  customerId: number;
+  customerId: number | null;
+  brokerId: number | null;
   email: string;
   role: Role;
 };
+export type CustomerSession = Session & { customerId: number };
+export type BrokerSession = Session & { brokerId: number };
 
 function secretKey() {
   const secret = process.env.SESSION_SECRET;
@@ -65,13 +68,17 @@ export async function getSession(): Promise<Session | null> {
     const { payload } = await jwtVerify(token, secretKey());
     if (
       typeof payload.userId !== "number" ||
-      typeof payload.customerId !== "number" ||
+      (typeof payload.customerId !== "number" && payload.customerId !== null) ||
+      (typeof payload.brokerId !== "number" && payload.brokerId !== null) ||
       typeof payload.email !== "string" ||
-      (payload.role !== "CUSTOMER" && payload.role !== "ADMIN")
+      (payload.role !== "CUSTOMER" && payload.role !== "ADMIN" && payload.role !== "BROKER") ||
+      (payload.role === "BROKER" && (payload.customerId !== null || typeof payload.brokerId !== "number")) ||
+      (payload.role !== "BROKER" && (typeof payload.customerId !== "number" || payload.brokerId !== null))
     ) return null;
     return {
       userId: payload.userId,
       customerId: payload.customerId,
+      brokerId: payload.brokerId,
       email: payload.email,
       role: payload.role,
     };
@@ -90,4 +97,18 @@ export async function requireAdmin(): Promise<Session> {
   const session = await requireSession();
   if (session.role !== "ADMIN") throw new Error("FORBIDDEN");
   return session;
+}
+
+export async function requireBrokerOrAdmin(): Promise<Session> {
+  const session = await requireSession();
+  if (session.role !== "ADMIN" && session.role !== "BROKER") throw new Error("FORBIDDEN");
+  return session;
+}
+
+export async function requireCustomer(): Promise<CustomerSession> {
+  const session = await requireSession();
+  if (session.role !== "CUSTOMER" && session.role !== "ADMIN" || session.customerId === null) {
+    throw new Error("CUSTOMER_ACCESS_REQUIRED");
+  }
+  return session as CustomerSession;
 }

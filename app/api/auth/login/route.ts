@@ -15,11 +15,12 @@ export async function POST(request: Request) {
 
   try {
     const [rows] = await getPool().execute(
-      "SELECT User_ID, Customer_ID, Email, Password_Hash, Role FROM User_Account WHERE Email = ? LIMIT 1",
+      "SELECT User_ID, Customer_ID, Broker_ID, Email, Password_Hash, Role FROM User_Account WHERE Email = ? LIMIT 1",
       [email],
     );
     const user = (rows as Array<{
-      User_ID: number; Customer_ID: number; Email: string; Password_Hash: string; Role: "CUSTOMER" | "ADMIN";
+      User_ID: number; Customer_ID: number | null; Broker_ID: number | null;
+      Email: string; Password_Hash: string; Role: "CUSTOMER" | "ADMIN" | "BROKER";
     }>)[0];
     if (!user || !(await verifyPassword(password, user.Password_Hash))) {
       return NextResponse.json({ error: "Email or password is incorrect." }, { status: 401 });
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
     const session = {
       userId: user.User_ID,
       customerId: user.Customer_ID,
+      brokerId: user.Broker_ID,
       email: user.Email,
       role: user.Role,
     };

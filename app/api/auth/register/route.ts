@@ -49,7 +49,7 @@ export async function POST(request: Request) {
     );
     await connection.commit();
     transactionStarted = false;
-    await createSession({ userId, customerId, email, role: "CUSTOMER" });
+    await createSession({ userId, customerId, brokerId: null, email, role: "CUSTOMER" });
     return NextResponse.json({ user: { userId, customerId, email, role: "CUSTOMER" } }, { status: 201 });
   } catch (error) {
     if (connection && transactionStarted) await connection.rollback();

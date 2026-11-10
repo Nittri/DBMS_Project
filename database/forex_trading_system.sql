@@ -10,10 +10,11 @@ DROP TABLE IF EXISTS Forex_Trade;
 DROP TABLE IF EXISTS Margin_Transaction;
 DROP TABLE IF EXISTS Margin_Account;
 DROP TABLE IF EXISTS Trading_Account;
+DROP TABLE IF EXISTS Exchange_Rate_Sync;
 DROP TABLE IF EXISTS Exchange_Rate;
 DROP TABLE IF EXISTS Currency;
-DROP TABLE IF EXISTS Broker;
 DROP TABLE IF EXISTS User_Account;
+DROP TABLE IF EXISTS Broker;
 DROP TABLE IF EXISTS Customer;
 
 CREATE TABLE Customer (
@@ -23,21 +24,27 @@ CREATE TABLE Customer (
     Phone VARCHAR(20) NOT NULL
 ) ENGINE=InnoDB;
 
-CREATE TABLE User_Account (
-    User_ID INT AUTO_INCREMENT PRIMARY KEY,
-    Customer_ID INT NOT NULL UNIQUE,
-    Email VARCHAR(254) NOT NULL UNIQUE,
-    Password_Hash VARCHAR(255) NOT NULL,
-    Role ENUM('CUSTOMER', 'ADMIN') NOT NULL DEFAULT 'CUSTOMER',
-    Created_At DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (Customer_ID) REFERENCES Customer(Customer_ID) ON DELETE CASCADE
-) ENGINE=InnoDB;
-
 CREATE TABLE Broker (
     Broker_ID INT AUTO_INCREMENT PRIMARY KEY,
     Name VARCHAR(100) NOT NULL,
     Email VARCHAR(254) NOT NULL UNIQUE,
     Commission_Rate DECIMAL(5, 4) NOT NULL DEFAULT 0.0010 CHECK (Commission_Rate >= 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE User_Account (
+    User_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Customer_ID INT NULL UNIQUE,
+    Broker_ID INT NULL UNIQUE,
+    Email VARCHAR(254) NOT NULL UNIQUE,
+    Password_Hash VARCHAR(255) NOT NULL,
+    Role ENUM('CUSTOMER', 'ADMIN', 'BROKER') NOT NULL DEFAULT 'CUSTOMER',
+    Created_At DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (Customer_ID) REFERENCES Customer(Customer_ID) ON DELETE CASCADE,
+    FOREIGN KEY (Broker_ID) REFERENCES Broker(Broker_ID) ON DELETE CASCADE,
+    CONSTRAINT chk_user_account_identity CHECK (
+        (Role IN ('CUSTOMER', 'ADMIN') AND Customer_ID IS NOT NULL AND Broker_ID IS NULL) OR
+        (Role = 'BROKER' AND Customer_ID IS NULL AND Broker_ID IS NOT NULL)
+    )
 ) ENGINE=InnoDB;
 
 CREATE TABLE Currency (
@@ -71,11 +78,23 @@ CREATE TABLE Exchange_Rate (
     From_Currency CHAR(3) NOT NULL,
     To_Currency CHAR(3) NOT NULL,
     Rate DECIMAL(12, 6) NOT NULL CHECK (Rate > 0),
+    Rate_Source ENUM('ADMIN', 'FRANKFURTER') NOT NULL DEFAULT 'ADMIN',
     Updated_At DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT unique_currency_pair UNIQUE (From_Currency, To_Currency),
     FOREIGN KEY (From_Currency) REFERENCES Currency(Currency_Code),
     FOREIGN KEY (To_Currency) REFERENCES Currency(Currency_Code)
 ) ENGINE=InnoDB;
+
+CREATE TABLE Exchange_Rate_Sync (
+    Sync_ID TINYINT PRIMARY KEY,
+    Provider_Date DATE NULL,
+    Last_Checked_At DATETIME NULL,
+    Last_Success_At DATETIME NULL,
+    Last_Error VARCHAR(255) NULL,
+    CONSTRAINT chk_single_rate_sync_row CHECK (Sync_ID = 1)
+) ENGINE=InnoDB;
+
+INSERT INTO Exchange_Rate_Sync (Sync_ID) VALUES (1);
 
 CREATE TABLE Forex_Trade (
     Trade_ID INT AUTO_INCREMENT PRIMARY KEY,
@@ -138,11 +157,20 @@ SELECT
     ma.Margin_Level,
     ma.Leverage,
     COUNT(ft.Trade_ID) AS Total_Trades,
-    COALESCE(SUM(ft.Profit_Loss), 0) AS Total_PnL
+    COALESCE(SUM(ft.Profit_Loss), 0) AS Total_PnL,
+    COALESCE(SUM(CASE WHEN ft.Status = 'OPEN' THEN 1 ELSE 0 END), 0) AS Active_Trades,
+    ta.Balance + COALESCE(SUM(
+        CASE WHEN ft.Status = 'OPEN' AND er.Rate IS NOT NULL THEN
+            ft.Amount * (er.Rate - ft.Open_Rate) / ft.Open_Rate *
+            CASE WHEN ft.Trade_Type = 'BUY' THEN 1 ELSE -1 END
+        ELSE 0 END
+    ), 0) AS Current_Portfolio_Value
 FROM Customer c
 JOIN Trading_Account ta ON ta.Customer_ID = c.Customer_ID
 LEFT JOIN Margin_Account ma ON ma.Account_ID = ta.Account_ID
 LEFT JOIN Forex_Trade ft ON ft.Account_ID = ta.Account_ID
+LEFT JOIN Exchange_Rate er
+  ON er.From_Currency = ft.From_Currency AND er.To_Currency = ft.To_Currency
 GROUP BY c.Customer_ID, c.Name, ta.Account_ID, ta.Account_Type, ta.Status,
          ta.Balance, ma.Used_Margin, ma.Free_Margin, ma.Leverage;
 
@@ -644,7 +672,9 @@ BEGIN
     DECLARE v_balance DECIMAL(15, 2) DEFAULT NULL;
     DECLARE v_used_margin DECIMAL(15, 2) DEFAULT NULL;
     DECLARE v_margin_id INT DEFAULT NULL;
-    DECLARE v_admin_role VARCHAR(20) DEFAULT NULL;
+    DECLARE v_reviewer_role VARCHAR(20) DEFAULT NULL;
+    DECLARE v_reviewer_broker_id INT DEFAULT NULL;
+    DECLARE v_payment_broker_id INT DEFAULT NULL;
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -656,7 +686,8 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Action must be APPROVE or REJECT.';
     END IF;
     START TRANSACTION;
-    SELECT Account_ID INTO v_account_id FROM Payment WHERE Payment_ID = p_Payment_ID;
+    SELECT Account_ID, Broker_ID INTO v_account_id, v_payment_broker_id
+    FROM Payment WHERE Payment_ID = p_Payment_ID;
     IF v_account_id IS NULL THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pending withdrawal not found.';
     END IF;
@@ -668,10 +699,12 @@ BEGIN
     IF v_status IS NULL OR v_type <> 'WITHDRAWAL' OR v_status <> 'PENDING' THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pending withdrawal not found.';
     END IF;
-    SELECT Role INTO v_admin_role FROM User_Account
+    SELECT Role, Broker_ID INTO v_reviewer_role, v_reviewer_broker_id FROM User_Account
     WHERE User_ID = p_Admin_User_ID FOR UPDATE;
-    IF v_admin_role IS NULL OR v_admin_role <> 'ADMIN' THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Withdrawal review requires an administrator.';
+    IF v_reviewer_role IS NULL OR
+       (v_reviewer_role <> 'ADMIN' AND
+        (v_reviewer_role <> 'BROKER' OR v_reviewer_broker_id <> v_payment_broker_id)) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Withdrawal review requires the assigned broker or an administrator.';
     END IF;
     SELECT Margin_ID, Used_Margin INTO v_margin_id, v_used_margin FROM Margin_Account
     WHERE Account_ID = v_account_id FOR UPDATE;

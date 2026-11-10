@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { requireAdmin, requireSession } from "@/lib/auth";
+import { requireBrokerOrAdmin, requireSession } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { getRateHistoryCollection } from "@/lib/mongo";
+import { refreshReferenceRates } from "@/lib/rates";
 import { errorResponse, readJson } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -9,8 +10,10 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     await requireSession();
-    const [rates] = await getPool().query(
-      `SELECT er.From_Currency, er.To_Currency, er.Rate, er.Updated_At,
+    const pool = getPool();
+    const feed = await refreshReferenceRates(pool);
+    const [rates] = await pool.query(
+      `SELECT er.From_Currency, er.To_Currency, er.Rate, er.Rate_Source, er.Updated_At,
        (SELECT COUNT(*) FROM Forex_Trade ft
         WHERE ft.From_Currency = er.From_Currency AND ft.To_Currency = er.To_Currency) AS Trade_Count
        FROM Exchange_Rate er ORDER BY er.From_Currency, er.To_Currency`,
@@ -19,7 +22,8 @@ export async function GET() {
       const historyCollection = await getRateHistoryCollection();
       const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const history = await historyCollection.aggregate<{
-        pair: string; rate: number; recordedAt: Date;
+        pair: string; rate: number; minRate: number; maxRate: number;
+        providerDate: Date | null; recordedAt: Date;
       }>([
         { $match: { recordedAt: { $gte: since } } },
         { $sort: { recordedAt: 1 } },
@@ -27,19 +31,27 @@ export async function GET() {
           $group: {
             _id: {
               pair: "$pair",
-              day: { $dateToString: { format: "%Y-%m-%d", date: "$recordedAt" } },
+              day: {
+                $dateToString: {
+                  format: "%Y-%m-%d",
+                  date: { $ifNull: ["$providerDate", "$recordedAt"] },
+                },
+              },
             },
             rate: { $last: "$rate" },
+            minRate: { $min: "$rate" },
+            maxRate: { $max: "$rate" },
+            providerDate: { $last: "$providerDate" },
             recordedAt: { $last: "$recordedAt" },
           },
         },
         { $sort: { "_id.pair": 1, "_id.day": 1 } },
-        { $project: { _id: 0, pair: "$_id.pair", rate: 1, recordedAt: 1 } },
+        { $project: { _id: 0, pair: "$_id.pair", day: "$_id.day", rate: 1, minRate: 1, maxRate: 1, providerDate: 1, recordedAt: 1 } },
       ]).toArray();
-      return NextResponse.json({ rates, history, historyAvailable: true });
+      return NextResponse.json({ rates, history, historyAvailable: true, feed });
     } catch (error) {
       console.error("Could not load MongoDB rate history:", error);
-      return NextResponse.json({ rates, history: [], historyAvailable: false });
+      return NextResponse.json({ rates, history: [], historyAvailable: false, feed });
     }
   } catch (error) {
     return errorResponse(error);
@@ -61,7 +73,7 @@ export async function PUT(request: Request) {
   }
 
   try {
-    const admin = await requireAdmin();
+    const editor = await requireBrokerOrAdmin();
     const pool = getPool();
     const [currencies] = await pool.execute(
       "SELECT Currency_Code FROM Currency WHERE Currency_Code IN (?, ?)",
@@ -76,8 +88,8 @@ export async function PUT(request: Request) {
     );
     const previous = (previousRows as Array<{ Rate: number }>)[0];
     await pool.execute(
-      `INSERT INTO Exchange_Rate (From_Currency, To_Currency, Rate) VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE Rate = VALUES(Rate), Updated_At = CURRENT_TIMESTAMP`,
+      `INSERT INTO Exchange_Rate (From_Currency, To_Currency, Rate, Rate_Source) VALUES (?, ?, ?, 'ADMIN')
+       ON DUPLICATE KEY UPDATE Rate = VALUES(Rate), Rate_Source = 'ADMIN', Updated_At = CURRENT_TIMESTAMP`,
       [fromCurrency, toCurrency, rateText],
     );
 
@@ -89,7 +101,8 @@ export async function PUT(request: Request) {
         toCurrency,
         rate,
         previousRate: previous?.Rate ?? null,
-        updatedBy: admin.userId,
+        source: "ADMIN",
+        updatedBy: editor.userId,
         recordedAt: new Date(),
       });
     } catch (error) {
@@ -99,6 +112,26 @@ export async function PUT(request: Request) {
       );
     }
     return NextResponse.json({ ok: true, rate });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+export async function POST() {
+  try {
+    await requireBrokerOrAdmin();
+    const feed = await refreshReferenceRates(getPool(), true);
+    const [rates] = await getPool().query(
+      `SELECT From_Currency, To_Currency, Rate, Rate_Source, Updated_At
+       FROM Exchange_Rate ORDER BY From_Currency, To_Currency`,
+    );
+    if (feed.error) {
+      return NextResponse.json(
+        { rates, feed, error: "Could not refresh rates from the public reference-rate provider." },
+        { status: 502 },
+      );
+    }
+    return NextResponse.json({ rates, feed });
   } catch (error) {
     return errorResponse(error);
   }
