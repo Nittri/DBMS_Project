@@ -5,7 +5,10 @@ export function errorResponse(error: unknown) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
   if (error instanceof Error && error.message === "FORBIDDEN") {
-    return NextResponse.json({ error: "Administrator access required." }, { status: 403 });
+    return NextResponse.json({ error: "This operation is not permitted for your role." }, { status: 403 });
+  }
+  if (error instanceof Error && error.message === "CUSTOMER_ACCESS_REQUIRED") {
+    return NextResponse.json({ error: "A customer account is required for this operation." }, { status: 403 });
   }
   if (error instanceof Error && error.message.startsWith("Missing required environment variable: DB_")) {
     return NextResponse.json(

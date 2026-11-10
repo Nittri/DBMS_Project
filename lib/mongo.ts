@@ -44,6 +44,8 @@ export async function getRateHistoryCollection() {
     toCurrency: string;
     rate: number;
     previousRate: number | null;
+    source: string;
+    providerDate?: Date;
     updatedBy: number | null;
     recordedAt: Date;
   }>("exchange_rate_history");

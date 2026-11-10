@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth";
+import { requireCustomer } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { errorResponse } from "@/lib/http";
 
@@ -16,7 +16,7 @@ export async function POST(
   }
 
   try {
-    const session = await requireSession();
+    const session = await requireCustomer();
     const pool = getPool();
     const [rows] = await pool.execute(
       `SELECT ft.Account_ID FROM Forex_Trade ft

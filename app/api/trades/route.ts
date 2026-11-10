@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth";
+import { requireCustomer } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { errorResponse, readJson } from "@/lib/http";
 
@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const session = await requireSession();
+    const session = await requireCustomer();
     const [rows] = await getPool().execute(
       `SELECT ft.Trade_ID, ft.Account_ID, ft.From_Currency, ft.To_Currency, ft.Amount,
        ft.Trade_Type, ft.Status, ft.Open_Rate, ft.Close_Rate, ft.Profit_Loss, ft.Created_At
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const session = await requireSession();
+    const session = await requireCustomer();
     const [accounts] = await getPool().execute(
       "SELECT Account_ID FROM Trading_Account WHERE Account_ID = ? AND Customer_ID = ? AND Status = 'Active'",
       [accountId, session.customerId],

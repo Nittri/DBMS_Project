@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth";
+import { requireCustomer } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { errorResponse } from "@/lib/http";
 
@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const session = await requireSession();
+    const session = await requireCustomer();
     const [rows] = await getPool().execute(
       `SELECT ma.Margin_ID, ma.Account_ID, ma.Leverage, ma.Used_Margin, ma.Free_Margin,
        ma.Margin_Level, ta.Balance, ta.Status AS Account_Status

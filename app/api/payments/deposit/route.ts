@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth";
+import { requireCustomer } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { errorResponse, readJson } from "@/lib/http";
 
@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Deposit details are invalid." }, { status: 400 });
   }
   try {
-    const session = await requireSession();
+    const session = await requireCustomer();
     const pool = getPool();
     const [accounts] = await pool.execute(
       "SELECT Account_ID FROM Trading_Account WHERE Account_ID = ? AND Customer_ID = ? AND Status = 'Active'",

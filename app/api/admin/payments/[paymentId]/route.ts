@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/auth";
+import { requireBrokerOrAdmin } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { errorResponse, readJson } from "@/lib/http";
 
@@ -19,8 +19,8 @@ export async function POST(
     return NextResponse.json({ error: "Payment review details are invalid." }, { status: 400 });
   }
   try {
-    const admin = await requireAdmin();
-    await getPool().query("CALL ReviewWithdrawal(?, ?, ?, ?)", [paymentId, admin.userId, action, note || null]);
+    const reviewer = await requireBrokerOrAdmin();
+    await getPool().query("CALL ReviewWithdrawal(?, ?, ?, ?)", [paymentId, reviewer.userId, action, note || null]);
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof Error && "sqlState" in error && error.sqlState === "45000") {
